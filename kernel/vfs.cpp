@@ -222,18 +222,31 @@ void build_path(VNode* node, char* buf, size_t max) {
 
 // Resolve parent directory of path. Fills leaf_name with the final component.
 static VNode* resolve_parent(const char* path, char* leaf_name, size_t max) {
-    // Find last '/'
     size_t len = kstrlen(path);
+    
+    // Find last '/'
     size_t last_slash = 0;
-    for (size_t i = 0; i < len; i++)
-        if (path[i] == '/') last_slash = i;
-    // Copy leaf
+    bool has_slash = false;
+    for (size_t i = 0; i < len; i++) {
+        if (path[i] == '/') { last_slash = i; has_slash = true; }
+    }
+
+    if (!has_slash) {
+        // Bare name like "foo" — parent is cwd
+        kstrcpy(leaf_name, path, max);
+        VNode* cwd = get_cwd();
+        return cwd ? cwd : vfs_root;
+    }
+
+    // Copy leaf component
     kstrcpy(leaf_name, path + last_slash + 1, max);
-    // Build parent path
+
+    // Build parent path string
     char parent_path[256];
-    size_t plen = last_slash == 0 ? 1 : last_slash;
+    size_t plen = (last_slash == 0) ? 1 : last_slash;
     for (size_t i = 0; i < plen && i < 255; i++) parent_path[i] = path[i];
     parent_path[plen] = 0;
+
     return resolve(parent_path);
 }
 
