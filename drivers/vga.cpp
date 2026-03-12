@@ -13,7 +13,8 @@ static uint16_t* const BUFFER = reinterpret_cast<uint16_t*>(0xB8000);
 static size_t  col   = 0;
 static size_t  row   = 0;
 static uint8_t color = make_color(Color::LightGray, Color::Black);
-
+static size_t saved_row = 0;
+static size_t saved_col = 0;
 
 // ANSI escape parser state
 static enum class EscState : uint8_t {
@@ -83,6 +84,17 @@ static void update_cursor() {
     pic::outb(0x3D4, 0x0E); pic::outb(0x3D5, (uint8_t)(pos >> 8));
 }
 
+void clear() {
+    uint16_t blank = (color << 8) | ' ';
+
+    for (size_t i = 0; i < WIDTH * HEIGHT; i++)
+        BUFFER[i] = blank;
+
+    row = 0;
+    col = 0;
+    update_cursor();
+}
+
 static void put_entry(char c, uint8_t col_, size_t x, size_t y) {
     BUFFER[y * WIDTH + x] = (uint16_t)c | ((uint16_t)col_ << 8);
 }
@@ -147,11 +159,55 @@ static void _put_char(char c) {
             if (esc_param_count < 7) esc_param_count++;
             return;
         }
-        // Final byte — only SGR ('m') handled for now
         if (esc_param_count < 8) esc_param_count++;
         if (c == 'm') apply_sgr();
-        // Other final bytes (A/B/C/D cursor movement etc) ignored for now
-        esc_state = EscState::Normal;
+        if (c == 'J') {
+            if (esc_params[0] == 2) clear();
+        }
+        // Add these:
+        if (c == 'A') {  // cursor up
+            size_t n = esc_params[0] ? esc_params[0] : 1;
+            row = (row >= n) ? row - n : 0;
+            update_cursor();
+        }
+        if (c == 'B') {  // cursor down
+            size_t n = esc_params[0] ? esc_params[0] : 1;
+            row = (row + n < HEIGHT) ? row + n : HEIGHT - 1;
+            update_cursor();
+        }
+        if (c == 'C') {  // cursor forward
+            size_t n = esc_params[0] ? esc_params[0] : 1;
+            col = (col + n < WIDTH) ? col + n : WIDTH - 1;
+            update_cursor();
+        }
+        if (c == 'D') {  // cursor back
+            size_t n = esc_params[0] ? esc_params[0] : 1;
+            col = (col >= n) ? col - n : 0;
+            update_cursor();
+        }
+        if (c == 'H' || c == 'f') {  // cursor position \x1b[row;colH (1-indexed)
+            row = esc_params[0] ? esc_params[0] - 1 : 0;
+            col = esc_params[1] ? esc_params[1] - 1 : 0;
+            if (row >= HEIGHT) row = HEIGHT - 1;
+            if (col >= WIDTH)  col = WIDTH  - 1;
+        }
+        if (c == 'K') {  // erase in line
+            if (esc_params[0] == 0) {  // cursor to end
+                for (size_t x = col; x < WIDTH; x++)
+                    put_entry(' ', color, x, row);
+            } else if (esc_params[0] == 1) {  // start to cursor
+                for (size_t x = 0; x <= col; x++)
+                    put_entry(' ', color, x, row);
+            } else if (esc_params[0] == 2) {  // whole line
+                for (size_t x = 0; x < WIDTH; x++)
+                    put_entry(' ', color, x, row);
+            }
+        }
+        if (c == 's') { saved_row = row; saved_col = col; update_cursor(); }
+        if (c == 'u') { row = saved_row; col = saved_col; update_cursor(); }
+        esc_state = EscState::Normal;  
+
+
         return;
     }
 

@@ -144,13 +144,10 @@ static int64_t handle_write(const SyscallArgs& args) {
     const char* buf = reinterpret_cast<const char*>(args.arg1);
     uint64_t len    = args.arg2;
     if (!buf) return E_FAULT;
-    if (fd == FD_STDOUT || fd == FD_STDERR) {
-        for (uint64_t i = 0; i < len; i++) {
-            vga::put_char(buf[i]);
+    if (fd == FD_STDERR) 
+        for (uint64_t i = 0; i < len; i++) 
             serial::write_char(buf[i]);
-        }
-        return (int64_t)len;
-    }
+
     fdtable::FDTable* fdt = current_fdt();
     if (!fdt) return E_BADF;
     vfs::FileDescriptor* f = fdtable::lookup(fdt, fd);
@@ -163,18 +160,6 @@ static int64_t handle_read(const SyscallArgs& args) {
     char*    buf = reinterpret_cast<char*>(args.arg1);
     uint64_t len = args.arg2;
     if (!buf || len == 0) return E_FAULT;
-
-    // stdin reads from keyboard
-    if (fd == FD_STDIN) {
-        char* dst = buf;
-        uint64_t i = 0;
-        while (i < len) {
-            char c = keyboard::read_char();
-            dst[i++] = c;
-            if (c == '\n' || c == '\r') break;
-        }
-        return (int64_t)i;
-    }
 
     fdtable::FDTable* fdt = current_fdt();
     if (!fdt) return E_BADF;
@@ -194,7 +179,7 @@ static int64_t handle_open(const SyscallArgs& args) {
     vfs::FileDescriptor* f = vfs::open(path, flags);
     if (!f) return E_NOENT;
     int32_t fd = fdtable::install(fdt, f);
-    if (fd <= 0) { vfs::close(f); return E_NOSPACE; }
+    if (fd < 0) { vfs::close(f); return E_NOSPACE; }
     return fd;
 }
 

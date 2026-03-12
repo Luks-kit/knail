@@ -108,16 +108,60 @@ static FileOps ramfs_ops = {
     .readdir = ramfs_readdir,
 };
 
-// ── tty (keyboard) device ─────────────────────────────────────────────────
+// ── tty internal pushback buffer ──────────────────────────────────────────
+static char  tty_pushback[8];
+static int   tty_pb_len  = 0;
+static int   tty_pb_head = 0;
+
+static void tty_push_seq(const char* seq) {
+    for (int i = 0; seq[i] && tty_pb_len < (int)sizeof(tty_pushback); i++) {
+        int slot = (tty_pb_head + tty_pb_len) % (int)sizeof(tty_pushback);
+        tty_pushback[slot] = seq[i];
+        tty_pb_len++;
+    }
+}
+
+static char tty_pb_pop() {
+    char c = tty_pushback[tty_pb_head];
+    tty_pb_head = (tty_pb_head + 1) % (int)sizeof(tty_pushback);
+    tty_pb_len--;
+    return c;
+}
+
 static int64_t tty_read(VNode* /*node*/, uint64_t /*offset*/,
-                         void* buf, uint64_t len) {
+                        void* buf, uint64_t len) {
     if (!buf || len == 0) return E_FAULT;
     char* dst = reinterpret_cast<char*>(buf);
     uint64_t i = 0;
+
     while (i < len) {
-        char c = keyboard::read_char(); // blocks until keypress
-        dst[i++] = c;
-        if (c == '\n' || c == '\r') break; // line-buffered
+        // Drain pushback first
+        while (tty_pb_len > 0 && i < len)
+            dst[i++] = tty_pb_pop();
+        if (i == len) break;
+
+        keyboard::KeyEvent e = keyboard::read_event();
+        if (!e.pressed) continue;
+
+        if (e.ascii) {
+            dst[i++] = e.ascii;
+            if (e.ascii == '\n' || e.ascii == '\r') break;
+            continue;
+        }
+
+        const char* seq = nullptr;
+        switch (e.scancode) {
+            case keyboard::KEY_UP:    seq = "\x1b[A"; break;
+            case keyboard::KEY_DOWN:  seq = "\x1b[B"; break;
+            case keyboard::KEY_RIGHT: seq = "\x1b[C"; break;
+            case keyboard::KEY_LEFT:  seq = "\x1b[D"; break;
+            case keyboard::KEY_HOME:  seq = "\x1b[H"; break;
+            case keyboard::KEY_END:   seq = "\x1b[F"; break;
+            case keyboard::KEY_DEL:   seq = "\x1b[3~"; break;
+            case keyboard::KEY_PGUP:  seq = "\x1b[5~"; break;
+            case keyboard::KEY_PGDN:  seq = "\x1b[6~"; break;
+        }
+        if (seq) tty_push_seq(seq);
     }
     return (int64_t)i;
 }
@@ -127,7 +171,6 @@ static int64_t tty_write(VNode* /*node*/, uint64_t /*offset*/,
     const char* src = reinterpret_cast<const char*>(buf);
     for (uint64_t i = 0; i < len; i++) {
         vga::put_char(src[i]);
-        serial::write_char(src[i]);
     }
     return (int64_t)len;
 }

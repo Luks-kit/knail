@@ -25,11 +25,11 @@ void free(FDTable* table) {
 
 int32_t install(FDTable* table, vfs::FileDescriptor* file) {
     if (!table || !file) return -1;
-    for (uint32_t i = 0; i < MAX_FDS; i++) {
+    for (uint32_t i = 2; i < MAX_FDS; i++) { // optimization starting at 2, since fds[0..2] is just stdin/out/err
         if (!table->fds[i]) {
             table->fds[i] = file;
             table->count++;
-            return (int32_t)(i + FD_OFFSET);
+            return (int32_t)i;
         }
     }
     return -1; // table full
@@ -37,8 +37,8 @@ int32_t install(FDTable* table, vfs::FileDescriptor* file) {
 
 int32_t install_at(FDTable* table, vfs::FileDescriptor* file, int32_t fd) {
     if (!table || !file) return -1;
-    if (fd < (int32_t)FD_OFFSET) return -1;
-    uint32_t idx = (uint32_t)(fd - FD_OFFSET);
+    if (fd < 0) return -1;
+    uint32_t idx = (uint32_t)fd;
     if (idx >= MAX_FDS) return -1;
     if (table->fds[idx]) return -1; // already occupied, caller must remove first
     table->fds[idx] = file;
@@ -48,16 +48,16 @@ int32_t install_at(FDTable* table, vfs::FileDescriptor* file, int32_t fd) {
 
 vfs::FileDescriptor* lookup(FDTable* table, uint64_t fd) {
     if (!table) return nullptr;
-    if (fd < FD_OFFSET) return nullptr;
-    uint64_t idx = fd - FD_OFFSET;
+    if (fd < 0) return nullptr;
+    uint64_t idx = fd;
     if (idx >= MAX_FDS) return nullptr;
     return table->fds[idx];
 }
 
 vfs::FileDescriptor* remove(FDTable* table, uint64_t fd) {
     if (!table) return nullptr;
-    if (fd < FD_OFFSET) return nullptr;
-    uint64_t idx = fd - FD_OFFSET;
+    if (fd < 0) return nullptr;
+    uint64_t idx = fd;
     if (idx >= MAX_FDS) return nullptr;
     vfs::FileDescriptor* f = table->fds[idx];
     if (f) { table->fds[idx] = nullptr; table->count--; }

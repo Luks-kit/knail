@@ -34,27 +34,6 @@ static void klog(const char* msg) {
     serial::write_line(msg);
 }
 
-
-static void task_keyboard() {
-    vga::set_color(vga::Color::Yellow, vga::Color::Black);
-    vga::write_line("\nKnail shell - type something!");
-    serial::write_line("Shell ready");
-
-    while (true) {
-        vga::set_color(vga::Color::LightGreen, vga::Color::Black);
-        vga::write("kshell \\> "); serial::write("kshell \\> ");
-        vga::set_color(vga::Color::White, vga::Color::Black);
-
-        char c;
-        while ((c = keyboard::read_char()) != '\n' && c != '\r') {
-            vga::put_char(c);
-            serial::write_char(c);
-        }
-       vga::write_line("");
-       serial::write_line("");
-    }
-}
-
 extern "C" void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga::init();
     serial::init();

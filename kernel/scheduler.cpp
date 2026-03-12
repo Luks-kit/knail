@@ -2,6 +2,7 @@
 #include "scheduler.hpp"
 #include "fdtable.hpp"
 #include "heap.hpp"
+#include "syscall.hpp"
 #include "vfs.hpp"
 #include "vga.hpp"
 #include "serial.hpp"
@@ -492,6 +493,15 @@ void dump() {
 
 } // namespace sched
 
+void init_stdio(fdtable::FDTable* fdt) {
+    vfs::FileDescriptor* tty_r = vfs::open("/dev/tty", O_READ);
+    vfs::FileDescriptor* tty_w = vfs::open("/dev/tty", O_WRITE);
+    vfs::FileDescriptor* tty_e = vfs::open("/dev/tty", O_WRITE);
+    fdtable::install_at(fdt, tty_r, 0); // stdin
+    fdtable::install_at(fdt, tty_w, 1); // stdout
+    fdtable::install_at(fdt, tty_e, 2); // stderr
+}
+
 // ── spawn_user ────────────────────────────────────────────────────────────
 uint32_t sched::spawn_user(vmm::AddressSpace space,
                             const char* name,
@@ -615,6 +625,7 @@ uint32_t sched::spawn_user(vmm::AddressSpace space,
     t->next          = nullptr;
     t->address_space = space;
     t->cwd           = vfs::resolve("/");
+    init_stdio(t->fd_table);
 
     size_t i = 0;
     while (name[i] && i < 31) { t->name[i] = name[i]; i++; }

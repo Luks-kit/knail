@@ -4,23 +4,10 @@
 #include "keyboard.hpp"
 #include "pic.hpp"
 #include "scheduler.hpp"
-#include "serial.hpp"
 #include "idt.hpp"
 #include <stdint.h>
 
 namespace keyboard {
-
-static constexpr uint8_t KEY_UP    = 0xC8; // 0x80 + 0x48
-static constexpr uint8_t KEY_DOWN  = 0xD0;
-static constexpr uint8_t KEY_LEFT  = 0xCB;
-static constexpr uint8_t KEY_RIGHT = 0xCD;
-static constexpr uint8_t KEY_HOME  = 0xC7;
-static constexpr uint8_t KEY_END   = 0xCF;
-static constexpr uint8_t KEY_PGUP  = 0xC9;
-static constexpr uint8_t KEY_PGDN  = 0xD1;
-static constexpr uint8_t KEY_DEL   = 0xD3;
-static constexpr uint8_t KEY_INS   = 0xD2;
-
 // ── PS/2 ports ────────────────────────────────────────────────────────────
 static constexpr uint16_t PS2_DATA   = 0x60;
 static constexpr uint16_t PS2_STATUS = 0x64;
@@ -82,7 +69,6 @@ static bool e0_prefix = false;
 
 extern "C" void keyboard_handler() {
     uint8_t sc = pic::inb(PS2_DATA);
-
     if (sc == 0xE0) { e0_prefix = true; pic::eoi(pic::IRQ_KEYBOARD); return; }
 
     bool released = sc & 0x80;
@@ -90,26 +76,24 @@ extern "C" void keyboard_handler() {
     
     if (e0_prefix) {
         e0_prefix = false;
-        // Handle extended keys
         switch (key) {
-            case 0x48: 
-                push_event({0, (uint8_t)(0x80 + key), !released, shift_held, ctrl_held, alt_held}); 
-                break; // up
-            case 0x50: 
-                push_event({0, (uint8_t)(0x81 + key), !released, shift_held, ctrl_held, alt_held}); 
-                break; // down
-            case 0x4B: 
-                push_event({0, (uint8_t)(0x82 + key), !released, shift_held, ctrl_held, alt_held}); 
-                break; // left
-            case 0x4D: 
-                push_event({0, (uint8_t)(0x83 + key), !released, shift_held, ctrl_held, alt_held}); 
-                break; // right
-            case 0x1D: ctrl_held = !released; break; // right ctrl
-            case 0x38: alt_held  = !released; break; // right alt
+            case 0x48:
+            case 0x50:
+            case 0x4B:
+            case 0x4D:
+            case 0x47: // home
+            case 0x4F: // end
+            case 0x49: // pgup
+            case 0x51: // pgdn
+            case 0x53: // del
+            case 0x52: // ins
+                push_event({0, (uint8_t)(0x80 | key), !released, shift_held, ctrl_held, alt_held});
+                break;
+            case 0x1D: ctrl_held = !released; break;
+            case 0x38: alt_held  = !released; break;
         }
         goto eoi;
     }
-
 
     // Update modifier state
     if (key == SC_LSHIFT || key == SC_RSHIFT) { shift_held = !released; goto eoi; }
@@ -158,32 +142,28 @@ bool has_event() {
 
 // ── pop_event ─────────────────────────────────────────────────────────────
 KeyEvent pop_event() {
-    if (!has_event()) return KeyEvent{};
     KeyEvent e = buf[buf_tail];
     buf_tail = (buf_tail + 1) % BUF_SIZE;
     return e;
 }
 
-// ── read_char ─────────────────────────────────────────────────────────────
-char read_char() {
+KeyEvent read_event() {
     while (true) {
-        // Disable IRQs while we check + set waiting_task atomically
         __asm__ volatile("cli");
-        
+
         if (has_event()) {
-            __asm__ volatile("sti");
             KeyEvent e = pop_event();
-            if (e.pressed && e.ascii)
-                return e.ascii;
-            continue;
+            __asm__ volatile("sti");
+            return e;
         }
 
-        // No event — set ourselves as waiter before re-enabling IRQs
         waiting_task = sched::current();
         __asm__ volatile("sti");
         sched::block_current();
-        waiting_task = nullptr;  //  clear it here after being woken
+        waiting_task = nullptr;
     }
 }
+
+
 
 } // namespace keyboard
