@@ -99,11 +99,11 @@ static constexpr uint32_t S_IRWXO  = 0x0007; // other rwx
 static constexpr uint8_t DT_REG  = 8;
 static constexpr uint8_t DT_DIR  = 4;
 
-// ── Node types (internal VFS — unchanged) ────────────────────────────────
+// ── Node types (internal VFS ) ────────────────────────────────
 static constexpr uint32_t VFS_TYPE_FILE = 1;
 static constexpr uint32_t VFS_TYPE_DIR  = 2;
 
-// ── Dirent (internal VFS — unchanged) ────────────────────────────────────
+// ── Dirent (internal VFS) ────────────────────────────────────
 struct Dirent {
     char     name[128];
     uint32_t type;

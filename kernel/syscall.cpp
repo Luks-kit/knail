@@ -1,6 +1,7 @@
 // kernel/syscall.cpp - Knail syscall MSR setup + handler
 #include "syscall.hpp"
 #include "scheduler.hpp"
+#include "keyboard.hpp"
 #include "fdtable.hpp"
 #include "vfs.hpp"
 #include "timer.hpp"
@@ -99,14 +100,13 @@ static fdtable::FDTable* current_fdt() {
     return t ? t->fd_table : nullptr;
 }
 
-static int64_t handle_exit(const SyscallArgs&) {
-    // syscall_entry() increments preempt_count before calling us and
-    // normally decrements it after return. Exit never returns, so we must
-    // drop the preempt disable here or the whole system becomes
-    // non-preemptible after the first exiting task.
+
+extern "C" [[noreturn]] void syscall_exit_unwind(int code);
+
+static int64_t handle_exit(const SyscallArgs& args) {
     sched::preempt_enable();
-    sched::exit();
-    return 0;
+    syscall_exit_unwind(static_cast<int>(args.arg0));
+    __builtin_unreachable();
 }
 
 static int64_t handle_get_tid(const SyscallArgs&) {
@@ -163,7 +163,19 @@ static int64_t handle_read(const SyscallArgs& args) {
     char*    buf = reinterpret_cast<char*>(args.arg1);
     uint64_t len = args.arg2;
     if (!buf || len == 0) return E_FAULT;
-    if (fd == FD_STDIN) return E_INVAL;
+
+    // stdin reads from keyboard
+    if (fd == FD_STDIN) {
+        char* dst = buf;
+        uint64_t i = 0;
+        while (i < len) {
+            char c = keyboard::read_char();
+            dst[i++] = c;
+            if (c == '\n' || c == '\r') break;
+        }
+        return (int64_t)i;
+    }
+
     fdtable::FDTable* fdt = current_fdt();
     if (!fdt) return E_BADF;
     vfs::FileDescriptor* f = fdtable::lookup(fdt, fd);
@@ -221,6 +233,17 @@ static int64_t handle_stat(const SyscallArgs& args) {
     return E_OK;
 }
 
+static int64_t handle_readdir(const SyscallArgs& args) {
+    fdtable::FDTable* fdt = current_fdt();
+    if (!fdt) return E_BADF;
+    vfs::FileDescriptor* f = fdtable::lookup(fdt, args.arg0);
+    if (!f) return E_BADF;
+    Dirent* out = reinterpret_cast<Dirent*>(args.arg1);
+    if (!out) return E_FAULT;
+    return vfs::readdir(f, out);
+}
+
+
 static int64_t handle_mkdir(const SyscallArgs& args) {
     const char* path = reinterpret_cast<const char*>(args.arg0);
     if (!path) return E_FAULT;
@@ -233,35 +256,6 @@ static int64_t handle_unlink(const SyscallArgs& args) {
     return vfs::unlink(path);
 }
 
-static int64_t handle_readdir(const SyscallArgs& args) {
-    // Implemented as Linux getdents64(fd, buf, count)
-    fdtable::FDTable* fdt = current_fdt();
-    if (!fdt) return E_BADF;
-    vfs::FileDescriptor* f = fdtable::lookup(fdt, args.arg0);
-    if (!f) return E_BADF;
-    LinuxDirent* out   = reinterpret_cast<LinuxDirent*>(args.arg1);
-    uint64_t     count = args.arg2;
-    if (!out || count == 0) return E_FAULT;
-    // Fill as many dirents as fit in count bytes
-    uint64_t written = 0;
-    while (written + sizeof(LinuxDirent) <= count) {
-        Dirent d;
-        int64_t r = vfs::readdir(f, &d);
-        if (r == E_EOF || r < 0) break;
-        LinuxDirent* ld = reinterpret_cast<LinuxDirent*>(
-            reinterpret_cast<uint8_t*>(out) + written);
-        ld->d_ino    = 1;
-        ld->d_off    = (int64_t)(written + sizeof(LinuxDirent));
-        ld->d_reclen = sizeof(LinuxDirent);
-        ld->d_type   = (d.type == VFS_TYPE_DIR) ? DT_DIR : DT_REG;
-        // Copy name
-        int i = 0;
-        while (d.name[i] && i < 255) { ld->d_name[i] = d.name[i]; i++; }
-        ld->d_name[i] = 0;
-        written += sizeof(LinuxDirent);
-    }
-    return written > 0 ? (int64_t)written : E_OK;
-}
 
 // ── fstat ─────────────────────────────────────────────────────────────────
 static int64_t handle_fstat(const SyscallArgs& args) {
@@ -341,14 +335,11 @@ static int64_t handle_getcwd(const SyscallArgs& args) {
     char*    buf  = reinterpret_cast<char*>(args.arg0);
     uint64_t size = args.arg1;
     if (!buf || size == 0) return E_FAULT;
-    // For now every process is at root — extend when chdir is tracked per-task
-    const char* cwd = "/";
+    vfs::VNode* cwd = vfs::get_cwd();
+    vfs::build_path(cwd, buf, size);  // make build_path public or move logic here
     size_t len = 0;
-    while (cwd[len]) len++;
-    len++;
-    if (len > size) return E_INVAL;
-    for (size_t i = 0; i < len; i++) buf[i] = cwd[i];
-    return (int64_t)reinterpret_cast<uint64_t>(buf);
+    while (buf[len]) len++;
+    return (int64_t)len;
 }
 
 // ── chdir ─────────────────────────────────────────────────────────────────
@@ -357,7 +348,8 @@ static int64_t handle_chdir(const SyscallArgs& args) {
     if (!path) return E_FAULT;
     vfs::VNode* node = vfs::resolve(path);
     if (!node) return E_NOENT;
-    if (node->type != VFS_TYPE_DIR) return E_INVAL;
+    if (node->type != VFS_TYPE_DIR) return E_NOTDIR;
+    vfs::set_cwd(node);
     return E_OK;
 }
 

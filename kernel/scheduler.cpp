@@ -2,6 +2,7 @@
 #include "scheduler.hpp"
 #include "fdtable.hpp"
 #include "heap.hpp"
+#include "vfs.hpp"
 #include "vga.hpp"
 #include "serial.hpp"
 #include "pmm.hpp"
@@ -48,7 +49,7 @@ static void task_entry_trampoline() {
     uint64_t entry_addr;
     __asm__ volatile("mov %%r15, %0" : "=r"(entry_addr));
     reinterpret_cast<void(*)()>(entry_addr)();
-    sched::exit();
+    sched::exit(0);
 }
 
 
@@ -110,6 +111,7 @@ void init() {
     idle_task.name[2] = 'l'; idle_task.name[3] = 'e';
     idle_task.name[4] = 0;
     idle_task.address_space.pml4 = nullptr;
+    idle_task.cwd = nullptr;
 
     uint64_t* sp = reinterpret_cast<uint64_t*>(idle_stack + sizeof(idle_stack));
     *(--sp) = 0; // rip
@@ -240,19 +242,45 @@ void yield() {
 }
 
 // ── exit ──────────────────────────────────────────────────────────────────
-[[noreturn]] void exit() {
-     uint64_t irq_flags = irq_save_disable();
+[[noreturn]] void exit(int code) {
+    uint64_t irq_flags = irq_save_disable();
     Task* dead = current_task;
-    dead->state = State::Dead;
+    dead->exit_code = code;
+    dead->state     = State::Dead;
 
-    // Clean up fd table if this was a user task
     if (dead->fd_table) {
         fdtable::free(dead->fd_table);
         dead->fd_table = nullptr;
     }
 
+    // Reparent this task's children to init (tid=1), or mark orphan
+    Task* t = run_queue;
+    if (t) {
+        Task* start = t;
+        do {
+            if (t->parent_tid == dead->tid)
+                t->parent_tid = 1;
+            t = t->next;
+        } while (t != start);
+    }
+
+    // Wake parent if it's blocked waiting
+    if (dead->parent_tid) {
+        Task* t = run_queue;
+        if (t) {
+            Task* start = t;
+            do {
+                if (t->tid == dead->parent_tid && t->state == State::Blocked) {
+                    t->state = State::Ready;
+                    break;
+                }
+                t = t->next;
+            } while (t != start);
+        }
+    }
+
     unlink_task(dead);
-    dead->next = zombie_list;
+    dead->next  = zombie_list;
     zombie_list = dead;
 
     if (!run_queue) {
@@ -262,10 +290,93 @@ void yield() {
 
     do_switch(pick_next());
     irq_restore(irq_flags);
-
-    // A dead task should never be selected again.
     for (;;) __asm__ volatile("hlt");
 }
+
+extern "C" [[noreturn]] void sched_exit(int code) {
+    sched::exit(code);
+}
+
+void block_current() {
+    uint64_t irq_flags = irq_save_disable();
+    current_task->state = State::Blocked;
+    Task* next = pick_next();
+    do_switch(next);
+    irq_restore(irq_flags);
+}
+
+void wake(Task* t) {
+    if (!t) return;
+    if (t->state != State::Blocked) return;
+    t->state = State::Ready;
+    // If called from IRQ context, the timer tick will reschedule naturally.
+    // But force a reschedule if the current task has lower priority.
+    if (current_task == &idle_task) {
+        // We're idle — switch immediately
+        do_switch(t);
+    }
+}
+// ── wait ──────────────────────────────────────────────────────────────────
+// Returns 0 and fills out_tid/out_code on success.
+// Returns -1 if this task has no children at all.
+int wait(uint32_t* out_tid, int* out_code) {
+    while (true) {
+        uint64_t irq_flags = irq_save_disable();
+
+        bool any_child = false;
+
+        // First check zombie_list for already-dead children
+        Task* prev = nullptr;
+        Task* z    = zombie_list;
+        while (z) {
+            if (z->parent_tid == current_task->tid) {
+                // Unlink from zombie list
+                if (prev) prev->next = z->next;
+                else       zombie_list = z->next;
+
+                uint32_t tid  = z->tid;
+                int      code = z->exit_code;
+
+                if (z->stack)         heap::kfree(z->stack);
+                if (z->syscall_stack) heap::kfree(z->syscall_stack);
+                heap::kfree(z);
+
+                irq_restore(irq_flags);
+                if (out_tid)  *out_tid  = tid;
+                if (out_code) *out_code = code;
+                return 0;
+            }
+            any_child = true;
+            prev = z;
+            z    = z->next;
+        }
+
+        // Check run_queue for living children
+        if (run_queue) {
+            Task* start = run_queue;
+            Task* t     = start;
+            do {
+                if (t->parent_tid == current_task->tid) {
+                    any_child = true;
+                    break;
+                }
+                t = t->next;
+            } while (t != start);
+        }
+
+        if (!any_child) {
+            irq_restore(irq_flags);
+            return -1;  // ECHILD equivalent
+        }
+
+        // Block until a child exits and wakes us
+        current_task->state = State::Blocked;
+        do_switch(pick_next());
+        irq_restore(irq_flags);
+        // Loop back and check again — a different child may have exited
+    }
+}
+
 
 // ── current ───────────────────────────────────────────────────────────────
 Task* current() { return current_task; }
@@ -503,6 +614,7 @@ uint32_t sched::spawn_user(vmm::AddressSpace space,
     t->timeslice     = quantum;
     t->next          = nullptr;
     t->address_space = space;
+    t->cwd           = vfs::resolve("/");
 
     size_t i = 0;
     while (name[i] && i < 31) { t->name[i] = name[i]; i++; }

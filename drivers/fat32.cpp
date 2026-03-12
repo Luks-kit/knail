@@ -561,7 +561,7 @@ static int64_t fat_readdir(vfs::VNode* node, uint64_t index,
                     decode_83(*de, out->name);
                     out->type = (de->attr & ATTR_DIR)
                                 ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-                    return E_OK;
+                    return 1; // means found ( E_EOF is zero ) 
                 }
                 real_idx++;
             }

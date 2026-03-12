@@ -1,7 +1,10 @@
 // kernel/vfs.cpp - Knail VFS + ramfs implementation
 #include "vfs.hpp"
+#include "keyboard.hpp"
 #include "heap.hpp"
 #include "serial.hpp"
+#include "vga.hpp" 
+#include "scheduler.hpp"
 
 // ── Internal string helpers ───────────────────────────────────────────────
 static size_t kstrlen(const char* s) {
@@ -88,7 +91,7 @@ static int64_t ramfs_readdir(VNode* node, uint64_t index, Dirent* out) {
         if (i == index) {
             kstrcpy(out->name, child->name, sizeof(out->name));
             out->type = child->type;
-            return E_OK;
+            return 1;  // means found ( EOF is zero ) 
         }
         i++;
         child = child->next_sibling;
@@ -103,6 +106,44 @@ static FileOps ramfs_ops = {
     .create  = nullptr,
     .unlink  = nullptr,
     .readdir = ramfs_readdir,
+};
+
+// ── tty (keyboard) device ─────────────────────────────────────────────────
+static int64_t tty_read(VNode* /*node*/, uint64_t /*offset*/,
+                         void* buf, uint64_t len) {
+    if (!buf || len == 0) return E_FAULT;
+    char* dst = reinterpret_cast<char*>(buf);
+    uint64_t i = 0;
+    while (i < len) {
+        char c = keyboard::read_char(); // blocks until keypress
+        dst[i++] = c;
+        if (c == '\n' || c == '\r') break; // line-buffered
+    }
+    return (int64_t)i;
+}
+
+static int64_t tty_write(VNode* /*node*/, uint64_t /*offset*/,
+                          const void* buf, uint64_t len) {
+    const char* src = reinterpret_cast<const char*>(buf);
+    for (uint64_t i = 0; i < len; i++) {
+        vga::put_char(src[i]);
+        serial::write_char(src[i]);
+    }
+    return (int64_t)len;
+}
+
+static FileOps tty_ops = {
+    .read    = tty_read,
+    .write   = tty_write,
+    .close   = nullptr,
+    .readdir = nullptr,
+};
+
+static VNode tty_node = {
+    .name     = "tty",
+    .type     = VFS_TYPE_FILE,
+    .size     = 0,
+    .ops      = &tty_ops,
 };
 
 // ── Path utilities ────────────────────────────────────────────────────────
@@ -120,22 +161,63 @@ static const char* path_next(const char* path, char* component, size_t max) {
 
 // ── resolve ───────────────────────────────────────────────────────────────
 VNode* resolve(const char* path) {
-    if (!path || path[0] != '/') return nullptr;
-    VNode* node = vfs_root;
+    if (!path || !path[0]) return nullptr;
+
+    VNode* node;
+    if (path[0] == '/') {
+        node = vfs_root;  // absolute
+    } else {
+        node = get_cwd(); // relative — start from cwd
+        if (!node) node = vfs_root;
+    }
+
     const char* p = path;
+    if (path[0] == '/') p++; // skip leading slash
+
     char component[128];
     while (true) {
         p = path_next(p, component, sizeof(component));
-        if (!component[0]) return node; // consumed whole path
-        if (node->type != VFS_TYPE_DIR) return nullptr;
-        // Search children
-        VNode* child = node->children;
-        while (child) {
-            if (kstreq(child->name, component)) { node = child; break; }
-            child = child->next_sibling;
+        if (!component[0]) return node;
+        if (!kstreq(component, ".")) {
+            if (kstreq(component, "..")) {
+                // Go up to parent
+                if (node->parent) node = node->parent;
+                continue;
+            }
+            if (node->type != VFS_TYPE_DIR) return nullptr;
+            VNode* child = node->children;
+            while (child) {
+                if (kstreq(child->name, component)) { node = child; break; }
+                child = child->next_sibling;
+            }
+            if (!child) return nullptr;
         }
-        if (!child) return nullptr; // not found
     }
+}
+
+// Build absolute path string for a vnode by walking up to root
+void build_path(VNode* node, char* buf, size_t max) {
+    if (!node || node == vfs_root) {
+        buf[0] = '/'; buf[1] = 0;
+        return;
+    }
+    // Collect components by walking up
+    const char* parts[32];
+    int depth = 0;
+    VNode* n = node;
+    while (n && n != vfs_root && depth < 32) {
+        parts[depth++] = n->name;
+        n = n->parent;
+    }
+    // Build path string
+    size_t pos = 0;
+    for (int i = depth - 1; i >= 0 && pos < max - 2; i--) {
+        buf[pos++] = '/';
+        const char* part = parts[i];
+        size_t j = 0;
+        while (part[j] && pos < max - 1) buf[pos++] = part[j++];
+    }
+    buf[pos] = 0;
 }
 
 // Resolve parent directory of path. Fills leaf_name with the final component.
@@ -294,6 +376,13 @@ void init() {
     create("/dev",  VFS_TYPE_DIR);
     create("/tmp",  VFS_TYPE_DIR);
     create("/bin",  VFS_TYPE_DIR);
+    
+    // Register tty device
+    VNode* dev = resolve("/dev");
+    tty_node.parent       = dev;
+    tty_node.next_sibling = dev->children;
+    dev->children         = &tty_node;
+    
     serial::write_line("[VFS] ramfs mounted at /");
 }
 
@@ -447,13 +536,24 @@ int64_t unlink(const char* path) {
     return E_OK;
 }
 
+vfs::VNode* get_cwd() {
+    sched::Task* t = sched::current();
+    if (!t || !t->cwd) return vfs_root;
+    return t->cwd;
+}
+
+void set_cwd(vfs::VNode* node) {
+    sched::Task* t = sched::current();
+    if (t) t->cwd = node;
+}
+
 // ── readdir ───────────────────────────────────────────────────────────────
 int64_t readdir(FileDescriptor* fd, Dirent* out) {
     if (!fd || !out) return E_FAULT;
     if (fd->node->type != VFS_TYPE_DIR) return E_NOTDIR;
     if (!fd->node->ops->readdir) return E_INVAL;
     int64_t r = fd->node->ops->readdir(fd->node, fd->dir_index, out);
-    if (r == E_OK) fd->dir_index++;
+    if (r > 0) fd->dir_index++;
     return r;
 }
 

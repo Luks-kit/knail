@@ -58,6 +58,64 @@ void set_handler(uint8_t vector, void* handler, uint8_t type_attr) {
 extern "C" void idt_flush(Pointer*);
 extern "C" void* isr_stub_table[32];
 
+
+
+// In idt.cpp, before exception_handler
+
+extern "C" [[noreturn]] void df_handler(idt::Frame* f) {
+    // #DF always has error code 0 — the interesting info is WHERE we came from
+    uint64_t cr2, cr3;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+
+    vga::set_color(vga::Color::White, vga::Color::Red);
+    vga::write_line("                                                                                ");
+    vga::write_line("  *** DOUBLE FAULT — SYSTEM HALTED ***                                         ");
+    vga::write_line("                                                                                ");
+
+    vga::set_color(vga::Color::LightRed, vga::Color::Black);
+    vga::write("  rip=");    vga::write_hex(f->rip);
+    vga::write("  rsp=");    vga::write_hex(f->rsp);
+    vga::write("  rbp=");    vga::write_hex(f->rbp);
+    vga::write_line("");
+    vga::write("  cs=");     vga::write_hex(f->cs);
+    vga::write("  ss=");     vga::write_hex(f->ss);
+    vga::write("  rflags="); vga::write_hex(f->rflags);
+    vga::write_line("");
+    vga::write("  cr2=");    vga::write_hex(cr2);   // likely the bad address
+    vga::write("  cr3=");    vga::write_hex(cr3);   // page table root
+    vga::write_line("");
+
+    // Full register dump
+    vga::write("  rax="); vga::write_hex(f->rax);
+    vga::write("  rbx="); vga::write_hex(f->rbx);
+    vga::write("  rcx="); vga::write_hex(f->rcx);
+    vga::write("  rdx="); vga::write_hex(f->rdx);
+    vga::write_line("");
+    vga::write("  rsi="); vga::write_hex(f->rsi);
+    vga::write("  rdi="); vga::write_hex(f->rdi);
+    vga::write("  r8=");  vga::write_hex(f->r8);
+    vga::write("  r9=");  vga::write_hex(f->r9);
+    vga::write_line("");
+
+    // Serial dump — critical since VGA mapping itself might be the problem
+    serial::write_line("\n=== DOUBLE FAULT ===");
+    serial::write("rip=");    serial::write_hex(f->rip);
+    serial::write(" rsp=");   serial::write_hex(f->rsp);
+    serial::write(" rbp=");   serial::write_hex(f->rbp);
+    serial::write_line("");
+    serial::write("cr2=");    serial::write_hex(cr2);
+    serial::write(" cr3=");   serial::write_hex(cr3);
+    serial::write_line("");
+    serial::write("rax=");    serial::write_hex(f->rax);
+    serial::write(" rbx=");   serial::write_hex(f->rbx);
+    serial::write(" rcx=");   serial::write_hex(f->rcx);
+    serial::write(" rdx=");   serial::write_hex(f->rdx);
+    serial::write_line("");
+    serial::write_line("System halted.");
+
+    for (;;) __asm__ volatile("cli; hlt");
+}
 // ── init ──────────────────────────────────────────────────────────────────
 void init() {
     // Zero all entries
@@ -76,9 +134,9 @@ void init() {
     idt_ptr.base  = reinterpret_cast<uint64_t>(idt_entries);
     idt_flush(&idt_ptr);
 
-    // Double fault (#DF, vector 8) must use IST1 so the CPU always has a
-    // valid stack even when the fault was caused by a bad RSP.
-    idt_entries[8].ist = 1;
+    // Override vector 8 with dedicated handler + IST1
+    set_handler(8, reinterpret_cast<void*>(&df_handler), INTERRUPT_GATE);
+    idt_entries[8].ist = 1;   // IST1 = dedicated DF stack in TSS
 }
 
 } // namespace idt

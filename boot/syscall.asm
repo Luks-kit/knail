@@ -11,6 +11,24 @@ extern syscall_exec_rip
 extern syscall_exec_rsp
 extern syscall_exec_rflags
 
+
+; Called by handle_exit(code) with code in rdi.
+; Tears down the syscall_entry frame then jumps to sched::exit(int).
+global syscall_exit_unwind
+extern sched_exit   ; extern "C" wrapper around sched::exit
+
+syscall_exit_unwind:
+    ; rdi already contains the exit code — preserve it through the unwind
+    pop  rbp        ; unwind syscall_entry's saved rbp
+    pop  r11        ; discard saved user RFLAGS
+    pop  rcx        ; discard saved user RIP
+    swapgs          ; restore user GS (undo syscall_entry's swapgs)
+    ; RSP is now pointing at the top of the kernel syscall stack,
+    ; which is about to be freed. That's fine — sched::exit switches
+    ; away before anything touches it again.
+    jmp  sched_exit
+
+
 global syscall_entry
 
 syscall_entry:

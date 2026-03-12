@@ -88,7 +88,7 @@ static void maybe_mkdir(const char* path) {
 
 static void write_file(const char* path, const char* content) {
     long fd = syscall3(SYS_OPEN, (long)path, O_CREAT | O_TRUNC | O_RDWR, 0644);
-    if (fd >= 0) {
+    if (fd >= 3) {
         long len = 0;
         while (content[len]) len++;
         (void)syscall3(SYS_WRITE, fd, (long)content, len);
@@ -125,11 +125,7 @@ __attribute__((noreturn)) void _start(void) {
     }
 
     (void)syscall1(SYS_CHDIR, (long)"/");
-    write_str("[init] setup done, entering idle loop\n");
-
-    for (;;) {
-        (void)syscall0(SYS_YIELD);
-    }
+    write_str("[init] setup done, exiting\n");
 
     // unreachable
     syscall1(SYS_EXIT, 0);

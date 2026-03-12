@@ -101,6 +101,13 @@ int64_t mkdir(const char* path);
 // Remove a file (not a directory). Returns E_OK or negative errno.
 int64_t unlink(const char* path);
 
+// Get/set cwd vnode for current task
+vfs::VNode* get_cwd();
+void        set_cwd(vfs::VNode* node);
+
+// Build absolute path string for a vnode by walking up to root
+void build_path(VNode* node, char* buf, size_t max);
+
 // Duplicate a FileDescriptor (new offset, same vnode, bumps refcount).
 FileDescriptor* dup(FileDescriptor* fd);
 

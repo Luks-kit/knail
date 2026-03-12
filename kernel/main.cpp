@@ -162,11 +162,27 @@ extern "C" void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
         uint32_t uid = sched::spawn_elf(img, "init", 
                 init_argv, 1, init_envp, 2);
         if (!uid) { vga::write_line("Failed to start init!"); }
+        
+        
+        elf::Image shell_img = elf::load("/disk/shell");
+        if (!shell_img.valid) { serial::write_line("Failed to load init!"); break; }
+
+        const char* shell_argv[] = {"shell", nullptr};
+        const char* shell_envp[] = {
+            "PATH=/disk",
+            "TERM=knail",
+            nullptr,
+        };
+
+        uint32_t shell_uid = sched::spawn_elf(shell_img, "shell", 
+                shell_argv, 1, shell_envp, 2);
+        if (!shell_uid) { vga::write_line("Failed to start shell!"); }
+
+
     } while (0);
     // ── Go ────────────────────────────────────────────────────────────────
     
         
-    sched::spawn(task_keyboard, "shell");
 
     __asm__ volatile("sti");
     klog("[OK] Interrupts enabled");

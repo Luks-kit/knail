@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "vmm.hpp"
+#include "vfs.hpp"
 
 namespace fdtable { struct FDTable; } // forward declare to avoid circular include
 
@@ -28,11 +29,15 @@ struct Task {
     uint8_t*  syscall_stack;
     State     state;
     uint32_t  tid;
+    uint32_t  parent_tid;   // 0 = no parent / orphan
+    int32_t       exit_code;    // set before State::Dead
     uint32_t  timeslice;
     uint32_t  quantum;
     Task*     next;
     char      name[32];
     vmm::AddressSpace    address_space;
+    vfs::VNode* cwd;       
+    vfs::VNode* root;
     fdtable::FDTable*    fd_table;      // null for kernel tasks
 };
 
@@ -45,8 +50,11 @@ uint32_t spawn(void (*entry)(), const char* name,
                uint32_t quantum  = DEFAULT_QUANTUM);
 void     tick();
 void     yield();
-[[noreturn]] void exit();
+[[noreturn]] void exit(int32_t code);
+int32_t  wait(uint32_t* out_tid, int32_t* out_code); // -1 = no children, 0 = ok
 Task*    current();
+void block_current();
+void wake(Task* t);
 extern "C" void preempt_disable();
 extern "C" void preempt_enable();
 bool     preempt_enabled();
