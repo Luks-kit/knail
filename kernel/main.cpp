@@ -1,5 +1,4 @@
 // kernel/main.cpp
-
 #include "vga.hpp"
 #include "gdt.hpp"
 #include "pmm.hpp"
@@ -13,18 +12,18 @@
 #include "scheduler.hpp"
 #include "syscall.hpp"
 #include "cpuid.hpp"
-#include "vmm.hpp"
 #include "pci.hpp"
-#include "syscall.hpp"
 #include "vfs.hpp"
 #include "block.hpp"
 #include "ata.hpp"
 #include "fat32.hpp"
 #include "elf.hpp"
 #include "spawn.hpp"
+#include "types.hpp"
 
-static constexpr uint32_t MULTIBOOT2_MAGIC = 0x36D76289;
-extern "C" uint8_t kernel_end[];
+static constexpr u32 MULTIBOOT2_MAGIC = 0x36D76289;
+
+extern "C" u8 kernel_end[];
 
 static void spurious_irq7()  { pic::eoi(7);  }
 static void spurious_irq15() { pic::eoi(15); }
@@ -34,7 +33,7 @@ static void klog(const char* msg) {
     serial::write_line(msg);
 }
 
-extern "C" void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
+extern "C" void kernel_main(u32 mb2_magic, u32 mb2_info) {
     vga::init();
     serial::init();
 
@@ -63,24 +62,23 @@ extern "C" void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
         vga::write_hex(mb2_magic);
         vga::write_line("");
     }
-    
-    const cpuid::CpuInfo& cpu = cpuid::detect(); 
+
+    const cpuid::CpuInfo& cpu = cpuid::detect();
     cpuid::print(cpu);
-    
+
     // ── Core hardware init ────────────────────────────────────────────────
-    gdt::init();      klog("[OK] GDT + TSS");
-    idt::init();      klog("[OK] IDT");
-    pic::init(); 
+    gdt::init();  klog("[OK] GDT + TSS");
+    idt::init();  klog("[OK] IDT");
+    pic::init();
     pci::init();
-    pci::dump();
-    klog("[OK] PCI");
-    
+    pci::dump();  klog("[OK] PCI");
+
     idt::set_irq_handler(7,  spurious_irq7);
     idt::set_irq_handler(15, spurious_irq15);
     klog("[OK] PIC");
-    
+
     // ── Memory ────────────────────────────────────────────────────────────
-    pmm::init(mb2_info, reinterpret_cast<uint64_t>(kernel_end));
+    pmm::init(mb2_info, reinterpret_cast<u64>(kernel_end));
     {
         auto s = pmm::stats();
         vga::set_color(vga::Color::LightGreen, vga::Color::Black);
@@ -90,19 +88,20 @@ extern "C" void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
         vga::write_dec(s.free_frames * 4);
         vga::write_line(" KiB");
     }
-    vmm::init();      klog("[OK] VMM");
-    heap::init();     klog("[OK] Heap");
+    vmm::init();  klog("[OK] VMM");
+    heap::init(); klog("[OK] Heap");
 
     // ── Filesystems ───────────────────────────────────────────────────────
-    vfs::init();      klog("[OK] VFS");
+    vfs::init();   klog("[OK] VFS");
     block::init();
-    ata::init();      klog("[OK] ATA");
+    ata::init();   klog("[OK] ATA");
 
     vfs::mkdir("/disk");
+
     block::BlockDevice* hda = block::find("hda");
     if (hda) {
-        int64_t r = fat32::mount(hda, "/disk");
-        if (r == E_OK) klog("[OK] FAT32 /disk");
+        kStatus r = fat32::mount(hda, "/disk");
+        if (r.is_ok()) klog("[OK] FAT32 /disk");
         else           klog("[!!] FAT32 mount failed");
     } else {
         klog("[!!] hda not found");
@@ -120,51 +119,47 @@ extern "C" void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     keyboard::init(); klog("[OK] Keyboard");
 
     // ── Kernel services ───────────────────────────────────────────────────
-    sched::init();    klog("[OK] Scheduler");
-    syscall::init();  klog("[OK] Syscalls");
+    sched::init();   klog("[OK] Scheduler");
+    syscall::init(); klog("[OK] Syscalls");
 
     // ── Spawn tasks ───────────────────────────────────────────────────────
     __asm__ volatile("cli");
 
     // ── Launch init process from disk ─────────────────────────────────────
     do {
-        elf::Image img = elf::load("/disk/init");
-        if (!img.valid) { serial::write_line("Failed to load init!"); break; }
+        auto init_img = elf::load("/disk/init");
+        if (init_img.is_err()) {
+            serial::write_line("[!!] Failed to load init");
+            break;
+        }
 
         const char* init_argv[] = {"init", nullptr};
-        const char* init_envp[] = {
-            "PATH=/disk",
-            "TERM=knail",
-            nullptr,
-        };
+        const char* init_envp[] = {"PATH=/disk", "TERM=knail", nullptr};
 
-        uint32_t uid = sched::spawn_elf(img, "init", 
-                init_argv, 1, init_envp, 2);
-        if (!uid) { vga::write_line("Failed to start init!"); }
-        
-        
-        elf::Image shell_img = elf::load("/disk/shell");
-        if (!shell_img.valid) { serial::write_line("Failed to load init!"); break; }
+        auto init_tid = sched::spawn_elf(init_img.value(), "init",
+                                         init_argv, 1, init_envp, 2);
+        if (init_tid.is_err())
+            vga::write_line("[!!] Failed to start init");
+
+        auto shell_img = elf::load("/disk/shell");
+        if (shell_img.is_err()) {
+            serial::write_line("[!!] Failed to load shell");
+            break;
+        }
 
         const char* shell_argv[] = {"shell", nullptr};
-        const char* shell_envp[] = {
-            "PATH=/disk",
-            "TERM=knail",
-            nullptr,
-        };
+        const char* shell_envp[] = {"PATH=/disk", "TERM=knail", nullptr};
 
-        uint32_t shell_uid = sched::spawn_elf(shell_img, "shell", 
-                shell_argv, 1, shell_envp, 2);
-        if (!shell_uid) { vga::write_line("Failed to start shell!"); }
-
+        auto shell_tid = sched::spawn_elf(shell_img.value(), "shell",
+                                          shell_argv, 1, shell_envp, 2);
+        if (shell_tid.is_err())
+            vga::write_line("[!!] Failed to start shell");
 
     } while (0);
-    // ── Go ────────────────────────────────────────────────────────────────
-    
-        
 
+    // ── Go ────────────────────────────────────────────────────────────────
     __asm__ volatile("sti");
     klog("[OK] Interrupts enabled");
-    
+
     while (true) __asm__ volatile("hlt");
 }

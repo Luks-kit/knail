@@ -1,4 +1,4 @@
-// drivers/serial.cpp - Knail COM1 serial driver
+        // drivers/serial.cpp - Knail COM1 serial driver
 // In QEMU: run with -serial stdio to see output in terminal
 
 #include "serial.hpp"

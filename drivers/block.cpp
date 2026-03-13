@@ -1,14 +1,15 @@
 // drivers/block.cpp - Knail block device registry
 #include "block.hpp"
 #include "serial.hpp"
+#include "types.hpp"
 
 namespace block {
 
 static BlockDevice* devices[MAX_DEVICES];
-static uint32_t     device_count = 0;
+static u32          device_count = 0;
 
 void init() {
-    for (uint32_t i = 0; i < MAX_DEVICES; i++)
+    for (u32 i = 0; i < MAX_DEVICES; i++)
         devices[i] = nullptr;
     device_count = 0;
 }
@@ -24,13 +25,13 @@ bool register_device(BlockDevice* dev) {
     return true;
 }
 
-BlockDevice* get(uint32_t index) {
+BlockDevice* get(u32 index) {
     if (index >= device_count) return nullptr;
     return devices[index];
 }
 
 BlockDevice* find(const char* name) {
-    for (uint32_t i = 0; i < device_count; i++) {
+    for (u32 i = 0; i < device_count; i++) {
         const char* a = devices[i]->name;
         const char* b = name;
         bool match = true;
@@ -43,6 +44,6 @@ BlockDevice* find(const char* name) {
     return nullptr;
 }
 
-uint32_t count() { return device_count; }
+u32 count() { return device_count; }
 
 } // namespace block
