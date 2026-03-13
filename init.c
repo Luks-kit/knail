@@ -87,7 +87,7 @@ static void maybe_mkdir(const char* path) {
 }
 
 static void write_file(const char* path, const char* content) {
-    long fd = syscall3(SYS_OPEN, (long)path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    long fd = syscall2(SYS_OPEN, (long)path, O_CREAT | O_TRUNC | O_RDWR);
     if (fd >= 3) {
         long len = 0;
         while (content[len]) len++;
