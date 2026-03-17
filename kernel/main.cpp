@@ -141,6 +141,7 @@ extern "C" void kernel_main(u32 mb2_magic, u32 mb2_info) {
         if (init_tid.is_err())
             vga::write_line("[!!] Failed to start init");
 
+        
         auto shell_img = elf::load("/disk/shell");
         if (shell_img.is_err()) {
             serial::write_line("[!!] Failed to load shell");
@@ -154,6 +155,7 @@ extern "C" void kernel_main(u32 mb2_magic, u32 mb2_info) {
                                           shell_argv, 1, shell_envp, 2);
         if (shell_tid.is_err())
             vga::write_line("[!!] Failed to start shell");
+        
 
     } while (0);
 
